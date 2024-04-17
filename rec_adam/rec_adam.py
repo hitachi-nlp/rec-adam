@@ -25,9 +25,9 @@ from torch.optim import Optimizer
 logger = logging.getLogger(__name__)
 
 
-def anneal_function(function, step, k, t0, weight):
+def anneal_function(function, step, tau, t0, weight):
     if function == 'sigmoid':
-        return float(1 / (1 + np.exp(-k * (step - t0)))) * weight
+        return float(1 / (1 + np.exp(- (step - t0) / tau ))) * weight
     elif function == 'linear':
         return min(1, step / t0) * weight
     elif function == 'constant':
@@ -46,15 +46,15 @@ class RecAdam(Optimizer):
         weight_decay (float): Weight decay. Default: 0.0
         correct_bias (bool): can be set to False to avoid correcting bias in Adam (e.g. like in Bert TF repository). Default True.
         anneal_fun (str): a hyperparam for the anneal function, decide the function of the curve. Default 'sigmoid'.
-        anneal_k (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
+        anneal_tau (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
         anneal_t0 (float): a hyperparam for the anneal function, decide the middle point of the curve. Choice: [100, 250, 500, 1000]
         anneal_w (float): a hyperparam for the anneal function, decide the scale of the curve. Default 1.0.
-        pretrain_cof (float): the coefficient of the quadratic penalty. Default 5000.0.
+        pretrain_coef (float): the coefficient of the quadratic penalty. Default 5000.0.
         pretrain_params (list of tensors): the corresponding group of params in the pretrained model.
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-6, weight_decay=0.0, correct_bias=True,
-                 anneal_fun='sigmoid', anneal_k=0, anneal_t0=0, anneal_w=1.0, pretrain_cof=5000.0, pretrain_params=None):
+                 anneal_fun='sigmoid', anneal_tau=0, anneal_t0=0, anneal_w=1.0, pretrain_coef=5000.0, pretrain_params=None):
         if lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
         if not 0.0 <= betas[0] < 1.0:
@@ -64,8 +64,8 @@ class RecAdam(Optimizer):
         if not 0.0 <= eps:
             raise ValueError("Invalid epsilon value: {} - should be >= 0.0".format(eps))
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, correct_bias=correct_bias,
-                        anneal_fun=anneal_fun, anneal_k=anneal_k, anneal_t0=anneal_t0, anneal_w=anneal_w,
-                        pretrain_cof=pretrain_cof, pretrain_params=pretrain_params)
+                        anneal_fun=anneal_fun, anneal_tau=anneal_tau, anneal_t0=anneal_t0, anneal_w=anneal_w,
+                        pretrain_coef=pretrain_coef, pretrain_params=pretrain_params)
         super().__init__(params, defaults)
 
     def step(self, closure=None):
@@ -116,15 +116,15 @@ class RecAdam(Optimizer):
                 # With RecAdam method, the optimization objective is
                 # Loss = lambda(t)*Loss_T + (1-lambda(t))*Loss_S
                 # Loss = lambda(t)*Loss_T + (1-lambda(t))*\gamma/2*\sum((\theta_i-\theta_i^*)^2)
-                if group['anneal_w'] > 0.0:
+                if group['anneal_w'] >= 0.0:
                     # We calculate the lambda as the annealing function
-                    anneal_lambda = anneal_function(group['anneal_fun'], state["step"], group['anneal_k'],
+                    anneal_lambda = anneal_function(group['anneal_fun'], state["step"], group['anneal_tau'],
                                                     group['anneal_t0'], group['anneal_w'])
                     assert anneal_lambda <= group['anneal_w']
                     # The loss of the target task is multiplied by lambda(t)
                     p.data.addcdiv_(-step_size * anneal_lambda, exp_avg, denom)
                     # Add the quadratic penalty to simulate the pretraining tasks
-                    p.data.add_(-group["lr"] * (group['anneal_w'] - anneal_lambda) * group["pretrain_cof"], p.data - pp.data)
+                    p.data.add_(-group["lr"] * (group['anneal_w'] - anneal_lambda) * group["pretrain_coef"], p.data - pp.data)
                 else:
                     p.data.addcdiv_(-step_size, exp_avg, denom)
 

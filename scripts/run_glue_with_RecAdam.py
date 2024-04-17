@@ -162,7 +162,8 @@ def train(args, train_dataset, new_model, pretrained_model, tokenizer):
                 "params": [p for n, p in new_model.named_parameters() if
                            not any(nd in n for nd in no_decay) and args.model_type not in n],
                 "weight_decay": args.weight_decay,
-                "anneal_w": 0.0,
+                # "anneal_w": 0.0,
+                "anneal_w": -1.0,
                 "pretrain_params": [p_p for p_n, p_p in pretrained_model.named_parameters() if
                                     not any(nd in p_n for nd in no_decay) and args.model_type not in p_n]
             },
@@ -178,7 +179,8 @@ def train(args, train_dataset, new_model, pretrained_model, tokenizer):
                 "params": [p for n, p in new_model.named_parameters() if
                            any(nd in n for nd in no_decay) and args.model_type not in n],
                 "weight_decay": 0.0,
-                "anneal_w": 0.0,
+                # "anneal_w": 0.0,
+                "anneal_w": -1.0,
                 "pretrain_params": [p_p for p_n, p_p in pretrained_model.named_parameters() if
                                     any(nd in p_n for nd in no_decay) and args.model_type not in p_n]
             }
