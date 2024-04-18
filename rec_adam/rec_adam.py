@@ -54,6 +54,7 @@ class RecAdam(Optimizer):
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-6, weight_decay=0.0, correct_bias=True,
+                 regularization='l2',
                  anneal_fun='sigmoid', anneal_tau=0, anneal_t0=0, anneal_w=1.0, pretrain_coef=5000.0, pretrain_params=None):
         if lr < 0.0:
             raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
@@ -64,6 +65,7 @@ class RecAdam(Optimizer):
         if not 0.0 <= eps:
             raise ValueError("Invalid epsilon value: {} - should be >= 0.0".format(eps))
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, correct_bias=correct_bias,
+                        regularization=regularization,
                         anneal_fun=anneal_fun, anneal_tau=anneal_tau, anneal_t0=anneal_t0, anneal_w=anneal_w,
                         pretrain_coef=pretrain_coef, pretrain_params=pretrain_params)
         super().__init__(params, defaults)
@@ -122,9 +124,24 @@ class RecAdam(Optimizer):
                                                     group['anneal_t0'], group['anneal_w'])
                     assert anneal_lambda <= group['anneal_w']
                     # The loss of the target task is multiplied by lambda(t)
-                    p.data.addcdiv_(-step_size * anneal_lambda, exp_avg, denom)
-                    # Add the quadratic penalty to simulate the pretraining tasks
-                    p.data.add_(-group["lr"] * (group['anneal_w'] - anneal_lambda) * group["pretrain_coef"], p.data - pp.data)
+                    p.data.addcdiv_(- step_size * anneal_lambda, exp_avg, denom)
+
+                    regularization = group['regularization']
+                    lr = group["lr"]
+                    _lambda = group["anneal_w"] - anneal_lambda
+                    if regularization == 'l1':
+                        with torch.no_grad():
+                            # Use torch.sign to determine the direction of the weight and torch.clamp to apply the L1 update
+                            p.data = torch.sign(p.data) * torch.clamp(p.data.abs() - lr * _lambda * group["pretrain_coef"], min=0)
+                    elif regularization == 'l2':
+                        # Add the quadratic penalty to simulate the pretraining tasks
+                        p.data.add_(- lr * _lambda * group["pretrain_coef"], p.data - pp.data)
+                    else:
+                        raise ValueError('Invalid regularization type: %s' % regularization)
+
+                    logger.info('[RecAdam, regularization="%s", anneal_fun="%s"]    step: %d,    anneal_t0: %d,    anneal_tau: %f,    anneal_w: %f,    anneal_lambda: %f',
+                                regularization, group['anneal_fun'], state["step"], group['anneal_t0'], group['anneal_tau'], group['anneal_w'], anneal_lambda)
+
                 else:
                     p.data.addcdiv_(-step_size, exp_avg, denom)
 
