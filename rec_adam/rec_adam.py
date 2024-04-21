@@ -36,7 +36,7 @@ class RecAdam(Optimizer):
         anneal_tau (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
         anneal_t0 (float): a hyperparam for the anneal function, decide the middle point of the curve. Choice: [100, 250, 500, 1000]
         target_task_weight (float): a hyperparam for the anneal function, decide the scale of the curve. Default 1.0.
-        fisher_coef (float): the coefficient of the quadratic penalty. Default 5000.0.
+        fisher_coef (float): the coefficient of the quadratic penalty. Default 300, which works well for llama2
     """
 
     def __init__(self,
@@ -51,7 +51,7 @@ class RecAdam(Optimizer):
                  anneal_type='sigmoid',
                  anneal_tau=0,
                  anneal_t0=0,
-                 fisher_coef=5000.0):
+                 fisher_coef=300):
         defaults = {
             'lr': lr,
             'betas': betas,
@@ -211,7 +211,7 @@ def build(args,
           anneal_type='sigmoid',
           anneal_tau=0,
           anneal_t0=0,
-          fisher_coef=5000.0):
+          fisher_coef=300):
 
     # taken from trainer.py
     decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
@@ -254,17 +254,6 @@ def build(args,
             # "initial_params": [p_p for p_n, p_p in initial_parameters if not should_decay_param(p_n) and not is_original_arch_param(p_n)]
         }
     ]
-
-    if anneal_t0 is None:
-        if args.max_steps is None:
-            raise ValueError('rec_adam_anneal_t0 must be specified if max_steps is not specified')
-
-        logger.info(f'rec_adam_anneal_t0 is not specified, set to the half of the max_steps: {args.max_steps / 2}')
-        anneal_t0 = args.max_steps / 2
-
-    if anneal_tau is None:
-        logger.info(f'rec_adam_anneal_tau is not specified, set to the 1/3 of the rec_adam_anneal_t0: {anneal_t0 / 3}')
-        anneal_tau = anneal_t0 / 3  # factor will be 0.95 at steps = 2 x t0
 
     return RecAdam(
         optimizer_grouped_parameters,
