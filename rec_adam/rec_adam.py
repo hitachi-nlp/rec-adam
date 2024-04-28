@@ -33,8 +33,8 @@ class RecAdam(Optimizer):
         weight_decay (float): Weight decay. Default: 0.0
         correct_bias (bool): can be set to False to avoid correcting bias in Adam (e.g. like in Bert TF repository). Default True.
         anneal_type (str): a hyperparam for the anneal function, decide the function of the curve. Default 'sigmoid'.
-        anneal_tau (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
         anneal_t0 (float): a hyperparam for the anneal function, decide the middle point of the curve. Choice: [100, 250, 500, 1000]
+        anneal_tau (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
         target_task_weight (float): a hyperparam for the anneal function, decide the scale of the curve. Default 1.0.
         fisher_coef (float): the coefficient of the quadratic penalty. Default 300, which works well for llama2
     """
@@ -49,8 +49,8 @@ class RecAdam(Optimizer):
                  target_task_weight=1.0,
                  regularization='l2',
                  anneal_type='sigmoid',
-                 anneal_tau=0,
                  anneal_t0=0,
+                 anneal_tau=0,
                  fisher_coef=300):
         defaults = {
             'lr': lr,
@@ -60,14 +60,15 @@ class RecAdam(Optimizer):
             'correct_bias': correct_bias,
             'regularization': regularization,
             'anneal_type': anneal_type,
-            'anneal_tau': anneal_tau,
             'anneal_t0': anneal_t0,
+            'anneal_tau': anneal_tau,
             'target_task_weight': target_task_weight,
             'fisher_coef': fisher_coef,
         }
         if target_task_weight < 0.0 or target_task_weight > 1.0:
             raise ValueError('Invalid target_task_weight value: %f' % target_task_weight)
         super().__init__(params, defaults)
+        self._pretrain_params = {}
 
     def step(self, closure=None, only_pretrain_task=False):
         """Performs a single optimization step.
@@ -81,13 +82,32 @@ class RecAdam(Optimizer):
             loss = closure()
         for group in self.param_groups:
 
-            if "initial_params" not in group:   # the first 
+            if self._pretrain_params is None:
                 logger.info('initializing initial_params...')
-                group["initial_params"] = [p.detach().clone() for p in group["params"]]
+                for p in group["params"]:
+                    if p.shape is self._pretrain_params:  # p.shape is duplicated for some parameters.
+                        raise Exception('Unexpected.')
+                    self._pretrain_params[p.shape] = p.detach().clone()
 
-            for p, pp in zip(group["params"], group["initial_params"]):
+            # for i, (p, pp) in enumerate(zip(group["params"], self.pretrain_params)):
+            for i, p in enumerate(group["params"]):
+
+                param_shape = tuple(p.shape)
+                if param_shape not in self._pretrain_params:
+                    logger.warning('Initializing pre-trained parameters which was not found at the first step() call.'
+                                   'This is a heuristic and may not work properly.')
+                    pp = p.detach().clone()
+                    self._pretrain_params[param_shape] = pp
+
+                """
+                Guess the corresponding pre-trained parameters from the current parameters' shape.
+                We do this because deepspeed send us chunks of parameters asynchronusly.
+                But, this trick may not work if the two or more parameters have the same shape....
+                """
+                pp = self._pretrain_params[param_shape]
+
                 if p.data.shape != pp.data.shape:
-                    import pudb; pudb.set_trace()
+                    raise Exception('Unexpected, may be bug')
 
                 if p.grad is None:
                     continue
@@ -125,8 +145,8 @@ class RecAdam(Optimizer):
                     target_task_factor = self.get_target_task_factor(
                         state["step"],
                         anneal_type=group['anneal_type'],
-                        anneal_tau=group['anneal_tau'],
                         anneal_t0=group['anneal_t0'],
+                        anneal_tau=group['anneal_tau'],
                         target_task_weight=group['target_task_weight']
                     )
 
@@ -147,20 +167,22 @@ class RecAdam(Optimizer):
                     logger.info(
                         '  regularization: %s'
                         '  anneal_type: %s'
-                        '  anneal_t0: %d'
                         '  anneal_tau: %f'
+                        '  anneal_t0: %d'
                         '  target_task_weight: %f'
+                        '  fisher_coef: %f',
                         '  step: %d'
                         '  target_task_factor: %f'
                         '  pretrain_task_factor: %f',
                         regularization,
                         group['anneal_type'],
-                        group['anneal_t0'],
                         group['anneal_tau'],
+                        group['anneal_t0'],
                         group['target_task_weight'],
+                        group["fisher_coef"],
                         state["step"],
                         target_task_factor,
-                        pretrain_task_factor
+                        pretrain_task_factor,
                     )
 
 
@@ -191,8 +213,8 @@ class RecAdam(Optimizer):
                           anneal_t0: Optional[float] = None,
                           anneal_tau: Optional[float] = None) -> float:
         anneal_type = anneal_type or self.defaults['anneal_type']
-        anneal_tau = anneal_tau or self.defaults['anneal_tau']
         anneal_t0 = anneal_t0 or self.defaults['anneal_t0']
+        anneal_tau = anneal_tau or self.defaults['anneal_tau']
 
         if anneal_type == 'sigmoid':
             return float(1 / (1 + np.exp(- (step - anneal_t0) / (anneal_tau + 0.0001) )))
@@ -209,13 +231,36 @@ def build(args,
           target_task_weight=1.0,
           regularization='l2',
           anneal_type='sigmoid',
-          anneal_tau=0,
           anneal_t0=0,
+          anneal_tau=0,
+          anneal_schedule: Optional[str] = None,
           fisher_coef=300):
 
     # taken from trainer.py
     decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
     decay_parameters = [name for name in decay_parameters if "bias" not in name]
+
+    if anneal_schedule is not None:
+        if anneal_schedule == 'gradually_from_middle':
+            if args.max_steps is None:
+                raise ValueError('args.max_steps must be specified for anneal_schedule')
+            _anneal_t0 = int(args.max_steps / 2)
+            _anneal_tau = int(_anneal_t0 / 3)  # factor will be 0.95 at steps = 2 x t0
+
+        elif anneal_schedule == 'immediately_from_beginning':
+            _anneal_t0 = 0
+            _anneal_tau = 0
+
+        else:
+            raise ValueError('Invalid anneal_schedule: %s' % anneal_schedule)
+
+        logger.info('Anneal schduling is specified. This will overwrite the anneal_t0 (%d -> %d) and anneal_tau (%f -> %f)',
+                    anneal_t0, _anneal_t0, anneal_tau, _anneal_tau)
+
+        anneal_t0 = _anneal_t0
+        anneal_tau = _anneal_tau
+
+                    
 
     def should_decay_param(n):
         return n in decay_parameters
