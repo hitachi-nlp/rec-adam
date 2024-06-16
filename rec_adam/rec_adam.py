@@ -164,26 +164,27 @@ class RecAdam(Optimizer):
                     else:
                         raise ValueError('Invalid regularization type: %s' % regularization)
 
-                    logger.info(
-                        '  regularization: %s'
-                        '  anneal_type: %s'
-                        '  anneal_tau: %f'
-                        '  anneal_t0: %d'
-                        '  target_task_weight: %f'
-                        '  fisher_coef: %f',
-                        '  step: %d'
-                        '  target_task_factor: %f'
-                        '  pretrain_task_factor: %f',
-                        regularization,
-                        group['anneal_type'],
-                        group['anneal_tau'],
-                        group['anneal_t0'],
-                        group['target_task_weight'],
-                        group["fisher_coef"],
-                        state["step"],
-                        target_task_factor,
-                        pretrain_task_factor,
-                    )
+                    if state["step"] % 10 == 0:
+                        logger.info(
+                            ('  regularization: %s'
+                             '  anneal_type: %s'
+                             '  anneal_tau: %f'
+                             '  anneal_t0: %d'
+                             '  target_task_weight: %f'
+                             '  fisher_coef: %f'
+                             '  step: %d'
+                             '  target_task_factor: %f'
+                             '  pretrain_task_factor: %f'),
+                            regularization,
+                            group['anneal_type'],
+                            group['anneal_tau'],
+                            group['anneal_t0'],
+                            group['target_task_weight'],
+                            group["fisher_coef"],
+                            state["step"],
+                            target_task_factor,
+                            pretrain_task_factor,
+                        )
 
 
                 else:
@@ -260,8 +261,6 @@ def build(args,
         anneal_t0 = _anneal_t0
         anneal_tau = _anneal_tau
 
-                    
-
     def should_decay_param(n):
         return n in decay_parameters
 
@@ -278,25 +277,21 @@ def build(args,
             "params": [p for n, p in update_parameter if should_decay_param(n) and is_original_arch_param(n)],
             "weight_decay": args.weight_decay,
             "target_task_weight": target_task_weight,
-            # "initial_params": [p_p for p_n, p_p in initial_parameters if should_decay_param(p_n) and is_original_arch_param(p_n)]
         },
         {
             "params": [p for n, p in update_parameter if should_decay_param(n) and not is_original_arch_param(n)],
             "weight_decay": args.weight_decay,
             "target_task_weight": -1.0,
-            # "initial_params": [p_p for p_n, p_p in initial_parameters if should_decay_param(p_n) and not is_original_arch_param(p_n)]
         },
         {
             "params": [p for n, p in update_parameter if not should_decay_param(n) and is_original_arch_param(n)],
             "weight_decay": 0.0,
             "target_task_weight": target_task_weight,
-            # "initial_params": [p_p for p_n, p_p in initial_parameters if not should_decay_param(p_n) and is_original_arch_param(p_n)]
         },
         {
             "params": [p for n, p in update_parameter if not should_decay_param(n) and not is_original_arch_param(n)],
             "weight_decay": 0.0,
             "target_task_weight": -1.0,
-            # "initial_params": [p_p for p_n, p_p in initial_parameters if not should_decay_param(p_n) and not is_original_arch_param(p_n)]
         }
     ]
 
