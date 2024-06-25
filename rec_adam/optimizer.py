@@ -1,9 +1,8 @@
-#!/bin/bash
 import logging
 import math
-import numpy as np
 from typing import Optional
 
+import numpy as np
 import torch
 from torch.optim import Optimizer
 from transformers.trainer_pt_utils import get_parameter_names
@@ -15,43 +14,33 @@ logger = logging.getLogger(__name__)
 
 
 class RecAdam(Optimizer):
-    """ Implementation of RecAdam optimizer, a variant of Adam optimizer.
+    """ Re-Implementation of RecAdam optimizer, a variant of Adam optimizer. 
 
-    Just adding the square of the weights to the loss function is *not*
-    the correct way of using L2 regularization/weight decay with Adam,
-    since that will interact with the m and v parameters in strange ways.
-    
-    Instead we want to decay the weights in a manner that doesn't interact
-    with the m/v parameters. This is equivalent to adding the square
-    of the weights to the loss with plain (non-momentum) SGD.
-    Add weight decay at the end (fixed version)
-
-    Parameters:
-        lr (float): learning rate. Default 1e-3.
-        betas (tuple of 2 floats): Adams beta parameters (b1, b2). Default: (0.9, 0.999)
-        eps (float): Adams epsilon. Default: 1e-6
-        weight_decay (float): Weight decay. Default: 0.0
-        correct_bias (bool): can be set to False to avoid correcting bias in Adam (e.g. like in Bert TF repository). Default True.
-        anneal_type (str): a hyperparam for the anneal function, decide the function of the curve. Default 'sigmoid'.
-        anneal_t0 (float): a hyperparam for the anneal function, decide the middle point of the curve. Choice: [100, 250, 500, 1000]
-        anneal_tau (float): a hyperparam for the anneal function, decide the slop of the curve. Choice: [0.05, 0.1, 0.2, 0.5, 1]
-        target_task_weight (float): a hyperparam for the anneal function, decide the scale of the curve. Default 1.0.
-        fisher_coef (float): the coefficient of the quadratic penalty. Default 300, which works well for llama2
+    Notes:
+        * We recommend to initialize this optimizer throught "build()" rather than directly calling the constructor.
+          as the initialization is a bit complicated.
+        * "fisher_coef" should be tuned model-wisely, especially when you vary model size.
+          The default value of 3000 is the best for llama3-8B.
     """
 
     def __init__(self,
+
                  params,
+
                  lr=1e-3,
                  betas=(0.9, 0.999),
                  eps=1e-6,
                  weight_decay=0.0,
-                 correct_bias=True,
+
                  target_task_weight=1.0,
+                 fisher_coef=3000,
+
+                 correct_bias=True,
                  regularization='l2',
                  anneal_type='sigmoid',
                  anneal_t0=0,
-                 anneal_tau=0,
-                 fisher_coef=300):
+                 anneal_tau=0):
+
         defaults = {
             'lr': lr,
             'betas': betas,
@@ -94,8 +83,8 @@ class RecAdam(Optimizer):
 
                 param_shape = tuple(p.shape)
                 if param_shape not in self._pretrain_params:
-                    logger.warning('Initializing pre-trained parameters which was not found at the first step() call.'
-                                   'This is a heuristic and may not work properly.')
+                    # logger.warning('Initializing pre-trained parameters which was not found at the first step() call.'
+                    #                ' This is a heuristic and may not work properly.')
                     pp = p.detach().clone()
                     self._pretrain_params[param_shape] = pp
 
@@ -142,7 +131,7 @@ class RecAdam(Optimizer):
                     step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
 
                 if group['target_task_weight'] >= 0.0:
-                    target_task_factor = self.get_target_task_factor(
+                    target_task_factor = self._get_target_task_factor(
                         state["step"],
                         anneal_type=group['anneal_type'],
                         anneal_t0=group['anneal_t0'],
@@ -154,7 +143,8 @@ class RecAdam(Optimizer):
 
                     regularization = group['regularization']
                     lr = group["lr"]
-                    pretrain_task_factor = 1.0 - target_task_factor
+                    # pretrain_task_factor = 1.0 - target_task_factor
+                    pretrain_task_factor = 1.0
                     if regularization == 'l1':
                         with torch.no_grad():
                             p.data = torch.sign(p.data) * torch.clamp(p.data.abs() - lr * pretrain_task_factor * group["fisher_coef"], min=0)
@@ -195,24 +185,24 @@ class RecAdam(Optimizer):
 
         return loss
 
-    def get_target_task_factor(self,
+    def _get_target_task_factor(self,
                                step: int,
                                anneal_type: Optional[str] = None,
                                anneal_t0: Optional[float] = None,
                                anneal_tau: Optional[float] = None,
                                target_task_weight: Optional[float] = None) -> float:
         target_task_weight = target_task_weight or self.defaults['target_task_weight']
-        anneal_lambda = self.get_anneal_lambda(step,
+        anneal_lambda = self._get_anneal_lambda(step,
                                                anneal_type=anneal_type,
                                                anneal_t0=anneal_t0,
                                                anneal_tau=anneal_tau)
         return target_task_weight * anneal_lambda
 
-    def get_anneal_lambda(self,
-                          step: int,
-                          anneal_type: Optional[str] = None,
-                          anneal_t0: Optional[float] = None,
-                          anneal_tau: Optional[float] = None) -> float:
+    def _get_anneal_lambda(self,
+                           step: int,
+                           anneal_type: Optional[str] = None,
+                           anneal_t0: Optional[float] = None,
+                           anneal_tau: Optional[float] = None) -> float:
         anneal_type = anneal_type or self.defaults['anneal_type']
         anneal_t0 = anneal_t0 or self.defaults['anneal_t0']
         anneal_tau = anneal_tau or self.defaults['anneal_tau']
@@ -224,42 +214,56 @@ class RecAdam(Optimizer):
         elif anneal_type == 'constant':
             return 1.0
         else:
-            ValueError
+            ValueError('Invalid anneal_type: %s' % anneal_type)
 
 
-def build(args,
-          opt_model,
-          target_task_weight=1.0,
-          regularization='l2',
-          anneal_type='sigmoid',
-          anneal_t0=0,
-          anneal_tau=0,
-          anneal_schedule: Optional[str] = None,
-          fisher_coef=300):
+def build_rec_adam_optimizer(
+    model,
+
+    learning_rate=1e-3,
+    adam_epsilon=1e-6,
+    adam_beta1=0.9,
+    adam_beta2=0.999,
+    weight_decay=0.0,
+
+    target_task_weight=1.0,
+    fisher_coef=3000,
+):
+    anneal_schedule = 'immediately_from_beginning'
+    anneal_type = 'sigmoid'
+    anneal_t0: Optional[int] = None
+    anneal_tau: Optional[int] = None
+    max_steps: Optional[int] = None
+
 
     # taken from trainer.py
-    decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
+    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
     decay_parameters = [name for name in decay_parameters if "bias" not in name]
 
-    if anneal_schedule is not None:
-        if anneal_schedule == 'gradually_from_middle':
-            if args.max_steps is None:
-                raise ValueError('args.max_steps must be specified for anneal_schedule')
-            _anneal_t0 = int(args.max_steps / 2)
-            _anneal_tau = int(_anneal_t0 / 3)  # factor will be 0.95 at steps = 2 x t0
-
-        elif anneal_schedule == 'immediately_from_beginning':
+    if anneal_t0 is not None:
+        if anneal_tau is None:
+            raise ValueError('anneal_tau must be specified if anneal_t0 is specified')
+    elif anneal_tau is not None:
+        if anneal_t0 is None:
+            raise ValueError('anneal_t0 must be specified if anneal_tau is specified')
+    else:
+        if anneal_schedule == 'immediately_from_beginning':
             _anneal_t0 = 0
             _anneal_tau = 0
+
+        elif anneal_schedule == 'gradually_from_middle':
+            if max_steps is None:
+                raise ValueError('max_steps must be specified for anneal_schedule')
+            _anneal_t0 = int(max_steps / 2)
+            _anneal_tau = int(_anneal_t0 / 3)  # factor will be 0.95 at steps = 2 x t0
 
         else:
             raise ValueError('Invalid anneal_schedule: %s' % anneal_schedule)
 
-        logger.info('Anneal schduling is specified. This will overwrite the anneal_t0 (%d -> %d) and anneal_tau (%f -> %f)',
-                    anneal_t0, _anneal_t0, anneal_tau, _anneal_tau)
-
         anneal_t0 = _anneal_t0
         anneal_tau = _anneal_tau
+
+        logger.info('annealing schedule parameters: anneal_t0=%d, anneal_tau=%d', anneal_t0, anneal_tau)
 
     def should_decay_param(n):
         return n in decay_parameters
@@ -269,18 +273,18 @@ def build(args,
         return True   # TODO: implement logic to judge whether the parameter is from the original architecture or added one.
 
     # initial_parameters = [(n, p.detach()) for n, p in opt_model.named_parameters() if p.requires_grad]
-    update_parameter = [(n, p) for n, p in opt_model.named_parameters() if p.requires_grad]
+    update_parameter = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
 
     # we do not set initial_params here, as deepspeed may alter the shape of "params"
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in update_parameter if should_decay_param(n) and is_original_arch_param(n)],
-            "weight_decay": args.weight_decay,
+            "weight_decay": weight_decay,
             "target_task_weight": target_task_weight,
         },
         {
             "params": [p for n, p in update_parameter if should_decay_param(n) and not is_original_arch_param(n)],
-            "weight_decay": args.weight_decay,
+            "weight_decay": weight_decay,
             "target_task_weight": -1.0,
         },
         {
@@ -298,15 +302,15 @@ def build(args,
     return RecAdam(
         optimizer_grouped_parameters,
 
-        lr=args.learning_rate,
-        eps=args.adam_epsilon,
-        betas=(args.adam_beta1, args.adam_beta2),
-        weight_decay=args.weight_decay,
+        lr=learning_rate,
+        eps=adam_epsilon,
+        betas=(adam_beta1, adam_beta2),
+        weight_decay=weight_decay,
+        target_task_weight=target_task_weight,
+        fisher_coef=fisher_coef,
 
-        regularization=regularization,
+        regularization='l2',
         anneal_type=anneal_type,
         anneal_tau=anneal_tau,
         anneal_t0=anneal_t0,
-
-        fisher_coef=fisher_coef,
     )

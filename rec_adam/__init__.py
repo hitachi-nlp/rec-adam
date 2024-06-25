@@ -1,1 +1,2 @@
-from .rec_adam import RecAdam, build as build_rec_adam_optimizer
+from .optimizer import RecAdam, build_rec_adam_optimizer
+from .trainer import RecAdamTrainer
