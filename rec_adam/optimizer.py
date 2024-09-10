@@ -9,7 +9,6 @@ from transformers.trainer_pt_utils import get_parameter_names
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +20,7 @@ class RecAdam(Optimizer):
           as the initialization is a bit complicated.
         * "fisher_coef" should be tuned model-wisely, especially when you vary model size.
           The default value of 3000 is the best for llama3-8B.
+        * The implementation mimicks transformers.optimization.AdamW
     """
 
     def __init__(self,
@@ -58,6 +58,7 @@ class RecAdam(Optimizer):
             raise ValueError('Invalid target_task_weight value: %f' % target_task_weight)
         super().__init__(params, defaults)
         self._pretrain_params = {}
+        self._num_step_called = 0
 
     def step(self, closure=None, only_pretrain_task=False):
         """Performs a single optimization step.
@@ -66,34 +67,53 @@ class RecAdam(Optimizer):
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
         """
+        logger.info('======================================== RecAdam.step() called: %d ====================================', self._num_step_called)
+        self._num_step_called += 1
         loss = None
         if closure is not None:
             loss = closure()
-        for group in self.param_groups:
 
-            if self._pretrain_params is None:
-                logger.info('initializing initial_params...')
-                for p in group["params"]:
-                    if p.shape is self._pretrain_params:  # p.shape is duplicated for some parameters.
-                        raise Exception('Unexpected.')
-                    self._pretrain_params[p.shape] = p.detach().clone()
+        # if self._pretrain_params is None:
+        #     self._pretrain_params = {}   # HONOKA-2, middle2, large共に通る．GPUの数だけlogが出る．
+        #     logger.info('Initializing initial_params...')
+        #     for group in self.param_groups:
+        #         for p in group["params"]:
+        #             param_key = self._param_to_key(p)
+        #             if param_key is self._pretrain_params:  # p.shape is duplicated for some parameters.
+        #                 raise Exception('Unexpected.')
+        #             self._pretrain_params[param_key] = p.detach().clone()
+        #             logger.info('register pre-trained parameters key %s', param_key)
+        #             # raise
 
-            # for i, (p, pp) in enumerate(zip(group["params"], self.pretrain_params)):
-            for i, p in enumerate(group["params"]):
+        #             # middle2 : shape = 1003757568
+        #             # large   : shape = 1003757568
 
-                param_shape = tuple(p.shape)
-                if param_shape not in self._pretrain_params:
-                    # logger.warning('Initializing pre-trained parameters which was not found at the first step() call.'
-                    #                ' This is a heuristic and may not work properly.')
-                    pp = p.detach().clone()
-                    self._pretrain_params[param_shape] = pp
+        # newly_added_param_keys = set([])
+        for i_group, group in enumerate(self.param_groups):
+            logger.info('=================================== group: %d ==============================', i_group)
+            for i_param, p in enumerate(group["params"]):
 
-                """
-                Guess the corresponding pre-trained parameters from the current parameters' shape.
-                We do this because deepspeed send us chunks of parameters asynchronusly.
-                But, this trick may not work if the two or more parameters have the same shape....
-                """
-                pp = self._pretrain_params[param_shape]
+                # param_key = self._param_to_key(p)
+                logger.info('--------- for i_param, p in group["params"]: param_key: %s', self._param_to_key(p))
+
+                # if param_key not in self._pretrain_params:
+                #     if param_key in newly_added_param_keys:
+                #         raise Exception(f'Duplicate param_key: {param_key}')  # ここは通らない -> 重複していない．
+
+                #     # middle2, large共に通る．GPUの数だけlogが出る．
+                #     logger.warning('register pre-trained parameters key %s, which was not found at the first step() call.', param_key)
+                #     pp = p.detach().clone()
+                #     self._pretrain_params[param_key] = pp
+                #     newly_added_param_keys.add(param_key)
+                #     # middle2 : shape = 66560
+                #     # large   : shape = 33280
+                #     # 65536 x 4 = 262144
+                #     # 語彙サイズではない．120kなので．
+                #     # context_len?
+                #     # 一番近いのは...?
+
+                self._register_pp_if_not(p)
+                pp = self._get_pp(p)
 
                 if p.data.shape != pp.data.shape:
                     raise Exception('Unexpected, may be bug')
@@ -130,7 +150,8 @@ class RecAdam(Optimizer):
                     bias_correction2 = 1.0 - beta2 ** state["step"]
                     step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
 
-                if group['target_task_weight'] >= 0.0:
+                # if False:  # HONOKA: こうすると大丈夫
+                if group['target_task_weight'] >= 0.0: 
                     target_task_factor = self._get_target_task_factor(
                         state["step"],
                         anneal_type=group['anneal_type'],
@@ -175,8 +196,6 @@ class RecAdam(Optimizer):
                             target_task_factor,
                             pretrain_task_factor,
                         )
-
-
                 else:
                     p.data.addcdiv_(-step_size, exp_avg, denom)
 
@@ -184,6 +203,10 @@ class RecAdam(Optimizer):
                     p.data.add_(-group["lr"] * group["weight_decay"], p.data)
 
         return loss
+
+    def _param_to_key(self, p):
+        # return tuple(p.shape)
+        return id(p)
 
     def _get_target_task_factor(self,
                                step: int,
@@ -193,9 +216,9 @@ class RecAdam(Optimizer):
                                target_task_weight: Optional[float] = None) -> float:
         target_task_weight = target_task_weight or self.defaults['target_task_weight']
         anneal_lambda = self._get_anneal_lambda(step,
-                                               anneal_type=anneal_type,
-                                               anneal_t0=anneal_t0,
-                                               anneal_tau=anneal_tau)
+                                                anneal_type=anneal_type,
+                                                anneal_t0=anneal_t0,
+                                                anneal_tau=anneal_tau)
         return target_task_weight * anneal_lambda
 
     def _get_anneal_lambda(self,
@@ -215,6 +238,17 @@ class RecAdam(Optimizer):
             return 1.0
         else:
             ValueError('Invalid anneal_type: %s' % anneal_type)
+
+    def _register_pp_if_not(self, p):
+        param_key = self._param_to_key(p)
+        if param_key not in self._pretrain_params:
+            pp = p.detach().clone()
+            self._pretrain_params[param_key] = pp
+            logger.info('register pre-trained parameters key %s', param_key)
+
+    def _get_pp(self, p):
+        param_key = self._param_to_key(p)
+        return self._pretrain_params[param_key]
 
 
 def build_rec_adam_optimizer(
@@ -237,8 +271,9 @@ def build_rec_adam_optimizer(
 
 
     # taken from trainer.py
-    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
-    decay_parameters = [name for name in decay_parameters if "bias" not in name]
+    decay_parameters = [name
+                        for name in get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+                        if "bias" not in name]
 
     if anneal_t0 is not None:
         if anneal_tau is None:
