@@ -58,65 +58,19 @@ class RecAdam(Optimizer):
             raise ValueError('Invalid target_task_weight value: %f' % target_task_weight)
         super().__init__(params, defaults)
         self._pretrain_params = {}
-        self._num_step_called = 0
 
     def step(self, closure=None, only_pretrain_task=False):
-        """Performs a single optimization step.
+        for group in self.param_groups:
+            for p in group['params']:
+                self._register_pp_if_not(p)
 
-        Arguments:
-            closure (callable, optional): A closure that reevaluates the model
-                and returns the loss.
-        """
-        logger.info('======================================== RecAdam.step() called: %d ====================================', self._num_step_called)
-        self._num_step_called += 1
         loss = None
         if closure is not None:
             loss = closure()
 
-        # if self._pretrain_params is None:
-        #     self._pretrain_params = {}   # HONOKA-2, middle2, large共に通る．GPUの数だけlogが出る．
-        #     logger.info('Initializing initial_params...')
-        #     for group in self.param_groups:
-        #         for p in group["params"]:
-        #             param_key = self._param_to_key(p)
-        #             if param_key is self._pretrain_params:  # p.shape is duplicated for some parameters.
-        #                 raise Exception('Unexpected.')
-        #             self._pretrain_params[param_key] = p.detach().clone()
-        #             logger.info('register pre-trained parameters key %s', param_key)
-        #             # raise
-
-        #             # middle2 : shape = 1003757568
-        #             # large   : shape = 1003757568
-
-        # newly_added_param_keys = set([])
-        for i_group, group in enumerate(self.param_groups):
-            logger.info('=================================== group: %d ==============================', i_group)
-            for i_param, p in enumerate(group["params"]):
-
-                # param_key = self._param_to_key(p)
-                logger.info('--------- for i_param, p in group["params"]: param_key: %s', self._param_to_key(p))
-
-                # if param_key not in self._pretrain_params:
-                #     if param_key in newly_added_param_keys:
-                #         raise Exception(f'Duplicate param_key: {param_key}')  # ここは通らない -> 重複していない．
-
-                #     # middle2, large共に通る．GPUの数だけlogが出る．
-                #     logger.warning('register pre-trained parameters key %s, which was not found at the first step() call.', param_key)
-                #     pp = p.detach().clone()
-                #     self._pretrain_params[param_key] = pp
-                #     newly_added_param_keys.add(param_key)
-                #     # middle2 : shape = 66560
-                #     # large   : shape = 33280
-                #     # 65536 x 4 = 262144
-                #     # 語彙サイズではない．120kなので．
-                #     # context_len?
-                #     # 一番近いのは...?
-
-                self._register_pp_if_not(p)
+        for group in self.param_groups:
+            for p in group['params']:
                 pp = self._get_pp(p)
-
-                if p.data.shape != pp.data.shape:
-                    raise Exception('Unexpected, may be bug')
 
                 if p.grad is None:
                     continue
@@ -150,7 +104,6 @@ class RecAdam(Optimizer):
                     bias_correction2 = 1.0 - beta2 ** state["step"]
                     step_size = step_size * math.sqrt(bias_correction2) / bias_correction1
 
-                # if False:  # HONOKA: こうすると大丈夫
                 if group['target_task_weight'] >= 0.0: 
                     target_task_factor = self._get_target_task_factor(
                         state["step"],
@@ -162,10 +115,11 @@ class RecAdam(Optimizer):
 
                     p.data.addcdiv_(- step_size * target_task_factor, exp_avg, denom)  # target task loss
 
-                    regularization = group['regularization']
                     lr = group["lr"]
                     # pretrain_task_factor = 1.0 - target_task_factor
                     pretrain_task_factor = 1.0
+                    regularization = group['regularization']
+
                     if regularization == 'l1':
                         with torch.no_grad():
                             p.data = torch.sign(p.data) * torch.clamp(p.data.abs() - lr * pretrain_task_factor * group["fisher_coef"], min=0)
@@ -205,7 +159,6 @@ class RecAdam(Optimizer):
         return loss
 
     def _param_to_key(self, p):
-        # return tuple(p.shape)
         return id(p)
 
     def _get_target_task_factor(self,
