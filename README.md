@@ -26,13 +26,11 @@ pip install git+https://github.com/MorishT/rec-adam.git@honoka-dev
 ```python
 from rec_adam import build_rec_adam_optimizer
 
-your_model = (...)   # pytorch model
+model = (...)  # load your model, such as llama
 optimizer = build_rec_adam_optimizer(
-    your_model,
-    learning_rate=1e-3,
-    weight_decay=0.0,
-    target_task_weight=1.0,
-    fisher_coef=3000,
+    model,
+    learning_rate=1e-5,
+    fisher_coef=3000,   # a hyperparameter to be tuned
 )
 ```
 The loss will become something like `loss = loss_original + target_task_weight * (fisher_coef * l2_term)`.
