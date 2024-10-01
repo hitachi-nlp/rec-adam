@@ -26,7 +26,7 @@ pip install git+https://github.com/MorishT/rec-adam.git@honoka-dev
 ```python
 from rec_adam import build_rec_adam_optimizer
 
-your_model = (...)
+your_model = (...)   # pytorch model
 optimizer = build_rec_adam_optimizer(
     your_model,
     learning_rate=1e-3,
@@ -52,7 +52,6 @@ trainer = RecAdamTrainer(Trainer):
     rec_adam_fisher_coef=3000,
 ):
 ```
-
 
 ### (Not recommended) Initializing the optimizer directly via its constructor
 We do not recommend to initialize the optimizer directly using its constructor,
