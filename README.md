@@ -13,7 +13,7 @@ Re-implementation of [Sanyuan-Chen/RecAdam](https://github.com/Sanyuan-Chen/RecA
 
 ## Installation
 ```console
-pip install git+https://github.com/MorishT/rec-adam.git@honoka-dev
+pip install git+https://github.com/hitachi-nlp/rec-adam.git@master
 ```
 
 
@@ -35,7 +35,7 @@ optimizer = build_rec_adam_optimizer(
 ```
 The loss will become something like `loss = loss_original + target_task_weight * (fisher_coef * l2_term)`.
 Note that `target_task_weight` works differently from the original implementation,
-where the loss will become somthing like `loss = (1 - target_task_weight) * loss_original + (...)`.  
+where the loss is somthing like `loss = (1 - target_task_weight) * loss_original + (...)`.  
 
 `fisher_coef` should be tuned for each model, especially when you vary model size.
 The default value of 3000 is the best for llama3-8B.
@@ -46,7 +46,6 @@ The default value of 3000 is the best for llama3-8B.
 from rec_adam import RecAdamTrainer
 trainer = RecAdamTrainer(Trainer):
     training_args,
-    rec_adam_target_task_weight=1.0,
     rec_adam_fisher_coef=3000,
 ):
 ```
